@@ -13,6 +13,7 @@ func Calc(nums []int64) Stats {
     return Stats{}
 	}
 	s.Min = nums[1] - nums[0]
+	s.Max = nums[1] - nums[0]
 		
 	for i:= 1; i <= n; i++ {
 		diff := nums[i] - nums[i-1]
