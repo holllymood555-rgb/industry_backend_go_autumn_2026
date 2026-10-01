@@ -8,11 +8,11 @@ type Stats struct {
 func Calc(nums []int64) Stats {
 	s := Stats{}
 	n := len(nums) 
-	s.Min = nums[1] - nums[0]
 
 	if n < 2 {
     return Stats{}
 	}
+	s.Min = nums[1] - nums[0]
 		
 	for i:= 1; i <= n; i++ {
 		diff := nums[i] - nums[i-1]
