@@ -13,42 +13,48 @@ type LRUCache[K comparable, V any] struct {
 }
 
 func NewLRUCache[K comparable, V any](capacity int) *LRUCache[K, V] {
+	if capacity <= 0 {
+		capacity = 0
+	}
 	return &LRUCache[K, V]{
 		capacity: capacity,
-		items: make(map[K]*list.Element),
+		items:    make(map[K]*list.Element),
 	}
 }
-	
+
 func (c *LRUCache[K, V]) Get(key K) (value V, ok bool) {
-	a, ok = c.items[key]
+	getElem, ok := c.items[key]
 	if !ok {
 		var zero V
 		return zero, false
 	}
-	c.ll.MoveToBack(a)
-	ent := a.Value.(entry[K, V])
-	return ent.value, true
+
+	c.ll.MoveToFront(getElem)
+	return getElem.Value.(*entry[K, V]).value, true
 }
-	
+
 func (c *LRUCache[K, V]) Set(key K, value V) {
-    if c.capacity == 0 {
-        return
-    }
-	a, ok := c.items[key]; 
-    if ok {
-        a.Value = entry[K, V]{key: key, value: value}
-        return
-    }
+	if c.capacity == 0 {
+		return
+	}
+	updEntry, ok := c.items[key]
+	if ok {
+		updEntry.Value.(*entry[K, V]).value = value
+		return
+	}
 
-    if c.ll.Len() == c.capacity {
-        oldest := c.ll.Front()
-        ent := oldest.Value.(entry[K, V])
-        delete(c.items, ent.key)
-        c.ll.Remove(oldest)
-    }
+	if c.ll.Len() == c.capacity {
+		link_del := c.ll.Back()
+		delete(c.items, link_del.Value.(*entry[K, V]).key)
+		c.ll.Remove(link_del)
+	}
 
-    a := c.ll.PushBack(entry[K, V]{key: key, value: value})
-    c.items[key] = a
+	newEntry := &entry[K, V]{
+		key:   key,
+		value: value,
+	}
+	//вставляю элемент в начало list и дублирую ссылку на него в мапы
+	c.items[key] = c.ll.PushFront(newEntry)
 }
 
 type LRU[K comparable, V any] interface {
