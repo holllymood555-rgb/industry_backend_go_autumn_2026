@@ -16,12 +16,10 @@ func NewLRUCache[K comparable, V any](capacity int) *LRUCache[K, V] {
 	return &LRUCache[K, V]{
 		capacity: capacity,
 		items: make(map[K]*list.Element),
-		ll: list.New(),
 	}
 }
 	
 func (c *LRUCache[K, V]) Get(key K) (value V, ok bool) {
-	var a *list.Element
 	a, ok = c.items[key]
 	if !ok {
 		var zero V
@@ -33,16 +31,16 @@ func (c *LRUCache[K, V]) Get(key K) (value V, ok bool) {
 }
 	
 func (c *LRUCache[K, V]) Set(key K, value V) {
-    if c.capacity <= 0 {
+    if c.capacity == 0 {
         return
     }
-
-    if a, ok := c.items[key]; ok {
+	a, ok := c.items[key]; 
+    if ok {
         a.Value = entry[K, V]{key: key, value: value}
         return
     }
 
-    if c.ll.Len() >= c.capacity {
+    if c.ll.Len() == c.capacity {
         oldest := c.ll.Front()
         ent := oldest.Value.(entry[K, V])
         delete(c.items, ent.key)
