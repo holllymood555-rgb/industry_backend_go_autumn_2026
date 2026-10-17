@@ -1,59 +1,73 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"sync"
-	"time"
 )
 
-type Clock interface{ Now() time.Time }
-type Limiter struct {
-	mu     sync.Mutex
-	clock  Clock
-	rate   float64
-	burst  int
-	tokens float64
-	last   time.Time
+type Result[R any] struct {
+	Value R
+	Err   error
 }
 
-func NewLimiter(clock Clock, ratePerSec float64, burst int) *Limiter {
+var ErrInvalidWorkers = errors.New("workers must be positive")
 
-	l := Limiter{
-		clock:  clock,
-		burst:  burst,
-		tokens: float64(burst),
-		rate:   ratePerSec,
+func ParallelMap[T any, R any](ctx context.Context, workers int, in []T, fn func(context.Context, T) (R, error)) ([]Result[R], error) {
+	if workers <= 0 {
+		return nil, ErrInvalidWorkers
+	}
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
 	}
 
-	if clock != nil {
-		l.last = l.clock.Now()
+	if len(in) == 0 {
+		return []Result[R]{}, nil
 	}
 
-	return &l
-}
+	arrResult := make([]Result[R], len(in))
 
-func (l *Limiter) AllowN(n int) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	var wg sync.WaitGroup
+	ch := make(chan int)
 
-	if l.burst <= 0 || l.clock == nil {
-		return false
+	for g := 0; g < min(workers, len(in)); g++ {
+		wg.Go(func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case idx, ok := <-ch:
+					if !ok {
+						return
+					}
+					val, err := fn(ctx, in[idx])
+					if err != nil {
+						arrResult[idx].Err = err
+						continue
+					}
+					arrResult[idx].Value = val
+				}
+
+			}
+		})
 	}
 
-	if n > l.burst || n <= 0 {
-		return false
+	wg.Go(func() {
+		defer close(ch)
+		for i := range in {
+			select {
+			case <-ctx.Done():
+				return
+			case ch <- i:
+			}
+		}
+	})
+
+	wg.Wait()
+
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
 	}
 
-	//время может измениться, пока выполняются проверки
-	nowClock := l.clock.Now()
-	if nowClock.After(l.last) && l.rate > 0 {
-		r := nowClock.Sub(l.last).Seconds() * l.rate
-		l.tokens = min(l.tokens+r, float64(l.burst))
-		l.last = nowClock
-	}
-
-	if l.tokens >= float64(n) {
-		l.tokens -= float64(n)
-		return true
-	}
-	return false
+	return arrResult, nil
 }
