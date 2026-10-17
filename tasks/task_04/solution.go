@@ -29,4 +29,6 @@ func Calc(nums []int64) Stats {
 		}
 	}
 	return result
+
 }
+
