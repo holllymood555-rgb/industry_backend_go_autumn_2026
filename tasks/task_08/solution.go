@@ -16,46 +16,44 @@ type Limiter struct {
 }
 
 func NewLimiter(clock Clock, ratePerSec float64, burst int) *Limiter {
-    var t time.Time
-    if clock != nil {
-        t = clock.Now()
-    }	
-	return &Limiter{
-		clock: clock,
-		rate: rate,
-		burst: burst,
+
+	l := Limiter{
+		clock:  clock,
+		burst:  burst,
 		tokens: float64(burst),
-		last: t,
+		rate:   ratePerSec,
 	}
+
+	if clock != nil {
+		l.last = l.clock.Now()
+	}
+
+	return &l
 }
+
 func (l *Limiter) AllowN(n int) bool {
-    l.mu.Lock()
-    defer l.mu.Unlock()
+	l.mu.Lock()
+	defer l.mu.Unlock()
 
-    if l.clock == nil || l.burst <= 0 {
-        return false
-    }
-    if n <= 0 || n > l.burst {
-        return false
-    }
+	if l.burst <= 0 || l.clock == nil {
+		return false
+	}
 
-    now := l.clock.Now()
-    if now.Before(l.last) {
-        now = l.last
-    }
+	if n > l.burst || n <= 0 {
+		return false
+	}
 
-    if l.ratePerSec > 0 {
-        elapsed := now.Sub(l.last).Seconds()
-        l.tokens += elapsed * l.ratePerSec
-        if l.tokens > float64(l.burst) {
-            l.tokens = float64(l.burst)
-        }
-        l.last = now
-    }
+	//время может измениться, пока выполняются проверки
+	nowClock := l.clock.Now()
+	if nowClock.After(l.last) && l.rate > 0 {
+		r := nowClock.Sub(l.last).Seconds() * l.rate
+		l.tokens = min(l.tokens+r, float64(l.burst))
+		l.last = nowClock
+	}
 
-    if l.tokens >= float64(n) {
-        l.tokens -= float64(n)
-        return true
-    }
-    return false	
+	if l.tokens >= float64(n) {
+		l.tokens -= float64(n)
+		return true
+	}
+	return false
 }
