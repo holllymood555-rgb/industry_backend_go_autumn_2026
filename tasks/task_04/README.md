@@ -1,25 +1,32 @@
-# task_04: Агрегация изменений
+package main
 
-![task 04](../../badges/tasks/task_04.svg)
-
-```go
 type Stats struct {
 	Count         int
 	Sum, Min, Max int64
 }
 
-func Calc(nums []int64) Stats
-```
+func Calc(nums []int64) Stats {
+	result := Stats{}
 
-Считает количество, сумму, минимум и максимум **разностей соседних элементов** `nums[i] - nums[i-1]` для `i >= 1`.
+	if len(nums) < 2 {
+		return result
+	}
 
-- `len(nums) < 2` → `Stats{}`.
-- `nums` не изменяется.
-- O(n) по времени и O(1) дополнительной памяти: без сортировки, промежуточных срезов и аллокаций.
-- Входные данные гарантируют, что разности и промежуточные суммы помещаются в `int64`.
+	diff := nums[1] - nums[0]
+	result.Count, result.Sum, result.Min, result.Max = len(nums)-1, diff, diff, diff
 
-```go
-Calc([]int64{10, 13, 8, 8}) // разности 3, -5, 0 → Stats{Count: 3, Sum: -2, Min: -5, Max: 3}
-```
+	for i := 2; i < len(nums); i++ {
+		diff = nums[i] - nums[i-1]
 
-Проверка: `make task_04`.
+		result.Sum += diff
+
+		if result.Min > diff {
+			result.Min = diff
+		}
+
+		if result.Max < diff {
+			result.Max = diff
+		}
+	}
+	return result
+}
