@@ -6,29 +6,28 @@ type Stats struct {
 }
 
 func Calc(nums []int64) Stats {
-	result := Stats{}
+	s := Stats{}
 
 	if len(nums) < 2 {
-		return result
+		return Stats{}
 	}
 
-	diff := nums[1] - nums[0]
-	result.Count, result.Sum, result.Min, result.Max = len(nums)-1, diff, diff, diff
+	firsPair := nums[1] - nums[0]
+	s.Count = 1
+	s.Sum = firsPair
+	s.Min = firsPair
+	s.Max = firsPair
 
 	for i := 2; i < len(nums); i++ {
-		diff = nums[i] - nums[i-1]
-
-		result.Sum += diff
-
-		if result.Min > diff {
-			result.Min = diff
+		s.Count ++
+		Pair := nums[i] - nums[i-1]
+		s.Sum += Pair
+		if s.Min > Pair {
+			s.Min = Pair
 		}
-
-		if result.Max < diff {
-			result.Max = diff
+		if s.Max < Pair {
+			s.Max = Pair
 		}
 	}
-	return result
-
+	return s
 }
-
