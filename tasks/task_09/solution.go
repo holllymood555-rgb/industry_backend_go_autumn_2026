@@ -20,54 +20,56 @@ func ParallelMap[T any, R any](ctx context.Context, workers int, in []T, fn func
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
-
 	if len(in) == 0 {
 		return []Result[R]{}, nil
 	}
 
-	arrResult := make([]Result[R], len(in))
+	result := make([]Result[R], len(in))
+	tasks := make(chan int, len(in))
+	for i := range in {
+		tasks <- i
+	}
+	close(tasks)
 
-	var wg sync.WaitGroup
-	ch := make(chan int)
+	var count sync.WaitGroup
+	actualWorkers := workers
+	if actualWorkers > len(in) {
+		actualWorkers = len(in)
+	}
 
-	for g := 0; g < min(workers, len(in)); g++ {
-		wg.Go(func() {
+	count.Add(actualWorkers)
+	for i := 0; i < actualWorkers; i++ {
+		go func() {
+			defer count.Done()
 			for {
+				if ctx.Err() != nil {
+					return
+				}
+				
 				select {
 				case <-ctx.Done():
 					return
-				case idx, ok := <-ch:
+				case idx, ok := <-tasks:
 					if !ok {
 						return
 					}
+
 					val, err := fn(ctx, in[idx])
 					if err != nil {
-						arrResult[idx].Err = err
-						continue
+						var zero R
+						result[idx] = Result[R]{Value: zero, Err: err}
+					} else {
+						result[idx] = Result[R]{Value: val, Err: nil}
 					}
-					arrResult[idx].Value = val
 				}
-
 			}
-		})
+		}()
 	}
 
-	wg.Go(func() {
-		defer close(ch)
-		for i := range in {
-			select {
-			case <-ctx.Done():
-				return
-			case ch <- i:
-			}
-		}
-	})
-
-	wg.Wait()
+	count.Wait()
 
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
-
-	return arrResult, nil
+	return result, nil
 }
