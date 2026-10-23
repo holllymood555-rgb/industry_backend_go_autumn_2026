@@ -4,15 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log"
 	"net/http"
-	"net/url"
-	"path"
-	"slices"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
-	"uuid"
 )
 
 type Task struct {
@@ -42,236 +39,221 @@ type inMemoryTaskRepo struct {
 }
 
 func NewInMemoryTaskRepo(clock Clock) TaskRepo {
-	return &inMemoryTaskRepo{
+	repo := &inMemoryTaskRepo{
 		clock: clock,
 		tasks: make(map[string]Task),
 	}
+	return repo
 }
+
 func (r *inMemoryTaskRepo) Create(title string) (Task, error) {
+	validTitle := strings.TrimSpace(title)
+	if validTitle == "" {
+		return Task{}, ErrInvalidTitle
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	trimTitle := strings.TrimSpace(title)
-	if trimTitle == "" {
-		return Task{}, ErrInvalidTitle
-	}
-	newTask := Task{
-		ID:        uuid.New().String(),
-		Title:     trimTitle,
-		Done:      false,
-		UpdatedAt: r.clock.Now(),
-	}
-	r.tasks[newTask.ID] = newTask
-	return newTask, nil
+	r.seq++
+	id := strconv.FormatUint(r.seq, 10)
+	task := Task{ID: id, Title: validTitle, Done: false, UpdatedAt: r.clock.Now()}
+	r.tasks[id] = task
+	return task, nil
 }
 
 func (r *inMemoryTaskRepo) Get(id string) (Task, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	t, ok := r.tasks[id]
-	if !ok {
-		return Task{}, false
+	if task, ok := r.tasks[id]; ok {
+		return task, true
 	}
-	return t, true
+
+	return Task{}, false
 }
 
 func (r *inMemoryTaskRepo) List(done bool) []Task {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	result := make([]Task, 0, len(r.tasks))
-	for _, val := range r.tasks {
-		if val.Done == done {
-			result = append(result, val)
+	res := make([]Task, 0)
+	for _, task := range r.tasks {
+		if task.Done == done {
+			res = append(res, task)
 		}
 	}
-	return result
+
+	sort.Slice(res, func(i, j int) bool {
+		if !res[i].UpdatedAt.Equal(res[j].UpdatedAt) {
+			return res[i].UpdatedAt.After(res[j].UpdatedAt)
+		}
+		return res[i].ID < res[j].ID
+	})
+	return res
 }
 
 func (r *inMemoryTaskRepo) SetDone(id string, done bool) (Task, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	t, ok := r.tasks[id]
+	task, ok := r.tasks[id]
 	if !ok {
 		return Task{}, ErrNotFound
 	}
-	if t.Done != done {
-		t.Done = done
-		t.UpdatedAt = r.clock.Now()
-		r.tasks[id] = t
+
+	if task.Done == done {
+		return task, nil
 	}
-	return t, nil
+
+	task.Done = done
+	task.UpdatedAt = r.clock.Now()
+	r.tasks[id] = task
+
+	return task, nil
 }
 
 type httpHandler struct{ repo TaskRepo }
 
 func NewHTTPHandler(repo TaskRepo) http.Handler {
-	return &httpHandler{
+	api := &httpHandler{
 		repo: repo,
 	}
+	return api
 }
+
 func (h *httpHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	switch {
-	case r.URL.Path == "/tasks":
+	if r.URL.Path == "/tasks" {
 		switch r.Method {
-		case http.MethodPost:
+		case "POST":
 			h.handleCreate(w, r)
-		case http.MethodGet:
+		case "GET":
 			h.handleList(w, r)
 		default:
-			// RFC9110/#status.405
-			w.Header().Set("Allow", "GET, POST")
-			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+		return
+	}
+
+	if strings.HasPrefix(r.URL.Path, "/tasks/") {
+		id := strings.TrimPrefix(r.URL.Path, "/tasks/")
+		if id == "" || strings.Contains(id, "/") {
+			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
-
-	case path.Dir(r.URL.Path) == "/tasks":
-		id := path.Base(r.URL.Path)
-
 		switch r.Method {
-		case http.MethodGet:
+		case "GET":
 			h.handleGet(w, r, id)
-		case http.MethodPatch:
+		case "PATCH":
 			h.handlePatch(w, r, id)
 		default:
-			// RFC9110/#status.405
-			w.Header().Set("Allow", "GET, PATCH")
-			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
-			return
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
-
-	default:
-		http.Error(w, "tasks not found", http.StatusNotFound)
+		return
 	}
+	http.Error(w, "not found", http.StatusNotFound)
 }
 
 func (h *httpHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
-	t := Task{}
-	if err := decodeStrictJSON(r.Body, &t); err != nil {
-		http.Error(w, "request body failed decode", http.StatusBadRequest)
+	var request struct {
+		Title string `json:"title"`
+	}
+
+	if err := decodeStrictJSON(r.Body, &request); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
 
-	t, err := h.repo.Create(t.Title)
-	if errors.Is(err, ErrInvalidTitle) {
-		http.Error(w, "invalid title", http.StatusBadRequest)
-		return
-	}
+	task, err := h.repo.Create(request.Title)
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		if errors.Is(err, ErrInvalidTitle) {
+			http.Error(w, "invalid title", http.StatusBadRequest)
+		} else {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+		}
 		return
 	}
-
-	writeJSON(w, 201, t)
+	writeJSON(w, http.StatusCreated, task)
 }
 
 func (h *httpHandler) handleGet(w http.ResponseWriter, r *http.Request, id string) {
-	t, ok := h.repo.Get(id)
+	task, ok := h.repo.Get(id)
 	if !ok {
-		http.Error(w, "task id not found", http.StatusNotFound)
+		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	writeJSON(w, 200, t)
+	writeJSON(w, http.StatusOK, task)
 }
 
 func (h *httpHandler) handleList(w http.ResponseWriter, r *http.Request) {
-	q, err := url.ParseQuery(r.URL.RawQuery)
-	if err != nil {
-		log.Printf("parse query error: %v", err)
-		return
-	}
+	param := r.URL.Query()
+	
+	done := false
 
-	if len(q["done"]) > 1 {
-		http.Error(w, "?done= incorrect in URL", http.StatusBadRequest)
-		return
-	}
-
-	t := make([]Task, 0)
-	switch {
-	case !q.Has("done"):
-		t = h.repo.List(false)
-	case q.Get("done") == "true":
-		t = h.repo.List(true)
-	case q.Get("done") == "false":
-		t = h.repo.List(false)
-	default:
-		http.Error(w, "?done= incorrect in URL", http.StatusBadRequest)
-		return
-	}
-
-	slices.SortFunc(t, func(a, b Task) int {
-		c := a.UpdatedAt.Compare(b.UpdatedAt)
-		if c == 0 {
-			return strings.Compare(a.ID, b.ID)
+	values, exists := param["done"]
+	if exists {
+		if len(values) != 1 {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
 		}
-		return c * -1
-	})
-
-	writeJSON(w, 200, t)
+		status := values[0]
+		if status == "true" {
+			done = true
+		} else if status == "false" {
+			done = false
+		} else {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+	}
+	
+	tasks := h.repo.List(done)
+	writeJSON(w, http.StatusOK, tasks)
 }
 
 func (h *httpHandler) handlePatch(w http.ResponseWriter, r *http.Request, id string) {
-	var t struct {
+	var request struct {
 		Done *bool `json:"done"`
 	}
 
-	if err := decodeStrictJSON(r.Body, &t); err != nil {
-		http.Error(w, "request body failed decode", http.StatusBadRequest)
+	if err := decodeStrictJSON(r.Body, &request); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
 
-	if t.Done == nil {
-		http.Error(w, "invalid value status", http.StatusBadRequest)
+	if request.Done == nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
 
-	updTask, err := h.repo.SetDone(id, *t.Done)
-	if errors.Is(err, ErrNotFound) {
-		http.Error(w, "task id not found", http.StatusNotFound)
-		return
-	}
+	task, err := h.repo.SetDone(id, *request.Done)
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		if errors.Is(err, ErrNotFound) {
+			http.Error(w, "not found", http.StatusNotFound)
+		} else {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+		}
 		return
 	}
-
-	writeJSON(w, 200, updTask)
+	writeJSON(w, http.StatusOK, task)
 }
-func decodeStrictJSON(r io.Reader, v any) error {
-	dec := json.NewDecoder(r)
-	dec.DisallowUnknownFields()
 
-	if err := dec.Decode(v); err != nil {
-		log.Printf("json decode error: %v", err)
+func decodeStrictJSON(r io.Reader, v any) error {
+	decoder := json.NewDecoder(r)
+	decoder.DisallowUnknownFields()
+
+	if err := decoder.Decode(v); err != nil {
 		return err
 	}
-
-	if t, err := dec.Token(); err != io.EOF {
-		log.Printf("there is data after the request: %v", t)
-		if err == nil {
-			return errors.New("there is data after the request")
-		}
-		return err
+	if decoder.More() {
+		return errors.New("extra data after JSON object")
 	}
 
 	return nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
-	data, err := json.Marshal(v)
-	if err != nil {
-		log.Printf("serialization error: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-
-	_, err = w.Write(data)
-	if err != nil {
-		log.Printf("failed to write response: %v", err)
-	}
+	json.NewEncoder(w).Encode(v)
 }
